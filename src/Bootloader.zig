@@ -7,7 +7,6 @@ const MemoryMap = @import("MemoryMap.zig");
 const ELF = @import("ELF.zig");
 const Paging = @import("Paging.zig");
 const KernelArgs = @import("Common.zig").KernelArgs;
-const bufPrint = @import("Common.zig").bufPrint;
 
 const W = @import("std").unicode.utf8ToUtf16LeStringLiteral;
 
@@ -243,6 +242,8 @@ pub fn main() noreturn {
         :
         : [pml4] "r" (page_table.?),
     );
+
+    // TODO: maybe load sections into memory for easier kernel debugging?
 
     // Load the kernel into memory since its memory mapped
     for (0..elf_hdr.program_header_entry_count) |i| {
