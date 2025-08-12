@@ -6,6 +6,8 @@ const Serial = @import("Serial.zig");
 const MemoryMap = @import("MemoryMap.zig");
 const ELF = @import("ELF.zig");
 const Paging = @import("Paging.zig");
+const KernelArgs = @import("Common.zig").KernelArgs;
+const bufPrint = @import("Common.zig").bufPrint;
 
 const W = @import("std").unicode.utf8ToUtf16LeStringLiteral;
 
@@ -25,6 +27,8 @@ const EfiKernelMemory: uefi.tables.MemoryType = @enumFromInt(0x80000001);
 const EfiPagingMemory: uefi.tables.MemoryType = @enumFromInt(0x80000002);
 const EfiMemoryMap: uefi.tables.MemoryType = @enumFromInt(0x80000003);
 
+var kernel_args: KernelArgs = undefined;
+
 fn getMemoryMap() void {
     if (memory_map_size == 0) {
         memory_map_size = 1 * @sizeOf(uefi.tables.MemoryDescriptor);
@@ -40,12 +44,6 @@ fn getMemoryMap() void {
         uefi.system_table.boot_services.?.freePool(@alignCast(@ptrCast(memory_map))).err() catch unreachable;
         uefi.system_table.boot_services.?.allocatePool(.loader_data, memory_map_size, @ptrCast(&memory_map)).err() catch unreachable;
     }
-}
-
-fn bufPrint(comptime fmtString: []const u8, args: anytype) void {
-    var string_buffer: [200]u8 = [_]u8{0} ** 200;
-    const str = fmt.bufPrint(&string_buffer, fmtString, args) catch unreachable;
-    Serial.print(str);
 }
 
 fn loadFile(comptime filePath: []const u8) []u8 {
@@ -249,6 +247,7 @@ pub fn main() noreturn {
     // Load the kernel into memory since its memory mapped
     for (0..elf_hdr.program_header_entry_count) |i| {
         const cur_entry: *ELF.ProgramHeader64 = @alignCast(@ptrCast(kernel_bin.ptr + elf_hdr.program_header_off + (i * elf_hdr.program_header_size)));
+
         if (cur_entry.type == .Load) {
             var file_index: usize = 0;
             while (file_index < cur_entry.file_size) : (file_index += 1) {
@@ -257,8 +256,28 @@ pub fn main() noreturn {
 
                 virtual_ptr.* = file_ptr.*;
             }
+
+            // Clear out any bss data
+            while (file_index < cur_entry.memory_size) : (file_index += 1) {
+                const virtual_ptr: *u8 = @ptrFromInt(cur_entry.virtual_address + file_index);
+                virtual_ptr.* = 0;
+            }
         }
     }
 
-    while (true) {}
+    // Guaranteed to live until the Kernel cleans up the bootloader data/code
+    kernel_args = .{
+        .memory_map = @alignCast(ranges.?.ptr),
+        .memory_map_len = ranges.?.len,
+    };
+
+    asm volatile (
+        \\ PUSHQ %[args]
+        \\ JMP *%[kernel_start]
+        :
+        : [kernel_start] "r" (0xFFFFFFFF80000000),
+          [args] "r" (&kernel_args),
+    );
+
+    unreachable;
 }

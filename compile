@@ -5,6 +5,8 @@ zig build
 
 mkdir -p bin
 
+sudo losetup -d /dev/loop10 &>/dev/null || true
+
 if [ ! -e "./bin/boot.img" ]; then
 	dd if=/dev/zero of=./bin/boot.img bs=512 count=93750
 	sudo gdisk ./bin/boot.img <<EOF
@@ -18,14 +20,14 @@ ef00
 w
 y
 EOF
-	sudo losetup --offset 1048576 --sizelimit 46934528 /dev/loop0 ./bin/boot.img
-	sudo mkfs.fat -F 32 /dev/loop0
-	sudo losetup -d /dev/loop0
+	sudo losetup --offset 1048576 --sizelimit 46934528 /dev/loop10 ./bin/boot.img
+	sudo mkfs.fat -F 32 /dev/loop10
+	sudo losetup -d /dev/loop10
 fi
 
-sudo losetup --offset 1048576 --sizelimit 46934528 /dev/loop0 ./bin/boot.img
+sudo losetup --offset 1048576 --sizelimit 46934528 /dev/loop10 ./bin/boot.img
 mkdir -p mnt
-sudo mount /dev/loop0 ./mnt
+sudo mount /dev/loop10 ./mnt
 sudo mkdir -p ./mnt/EFI/Boot
 sudo cp ./zig-out/bin/BOOTx64.efi ./mnt/EFI/Boot/
 sudo cp ./zig-out/bin/kernel.elf ./mnt

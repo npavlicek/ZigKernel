@@ -1,28 +1,32 @@
-ENTRY (_start)
-
 SECTIONS {
 	. = 0xFFFFFFFF80000000;
 
-	.kernel_start : {
+	.kernel_start : ALIGN(4K) {
 		KEEP(*(.kernel_start))
 	}
 
-	.text : {
+	.text : ALIGN(4K) {
 		*(.text .text.*)
 	}
 
-	.rodata : {
+	.rodata : ALIGN(4K) {
 		*(.rodata .rodata.*)
 	}
 
-	.data : {
+	.data : ALIGN(4K) {
 		*(.data .data.*)
 	}
 
-	.bss : {
+	.bss : ALIGN(4K) {
 		__bss_start = .;
 		*(.bss .bss.*)
 		__bss_end = .;
 	}
+
+	.bss.stack (NOLOAD) : ALIGN(4K) {
+		stack_start = .;
+		. += 16K;
+		stack_end = .;
+	} 
 }
 
