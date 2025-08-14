@@ -75,7 +75,7 @@ pub const OsAbi = enum(u8) {
 
 pub const ProgramHeader64 = packed struct(u448) {
     type: PType = .Null,
-    flags: PFlags = .X,
+    flags: PFlags = .{},
     offset: u64 = 0,
     virtual_address: u64 = 0,
     physical_address: u64 = 0,
@@ -99,11 +99,11 @@ pub const PType = enum(u32) {
     _,
 };
 
-pub const PFlags = enum(u32) {
-    X = 0x1,
-    W = 0x2,
-    R = 0x4,
-    _,
+pub const PFlags = packed struct(u32) {
+    x: bool = false,
+    w: bool = false,
+    r: bool = false,
+    zero: u29 = 0,
 };
 
 pub const SectionHeader64 = packed struct(u512) {

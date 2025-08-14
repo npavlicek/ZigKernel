@@ -15,18 +15,18 @@ SECTIONS {
 
 	.data : ALIGN(4K) {
 		*(.data .data.*)
-	}
+	} 
 
-	.bss : ALIGN(4K) {
+	.bss (NOLOAD) : ALIGN(4K) {
 		__bss_start = .;
 		*(.bss .bss.*)
 		__bss_end = .;
-	}
+	} 
 
 	.bss.stack (NOLOAD) : ALIGN(4K) {
-		stack_start = .;
+		__stack_start = .;
 		. += 16K;
-		stack_end = .;
-	} 
+		__stack_end = .;
+	}
 }
 

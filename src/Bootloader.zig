@@ -2,13 +2,17 @@ const std = @import("std");
 const uefi = @import("std").os.uefi;
 const fmt = @import("std").fmt;
 
-const Serial = @import("Serial.zig");
-const MemoryMap = @import("MemoryMap.zig");
-const ELF = @import("ELF.zig");
-const Paging = @import("Paging.zig");
-const KernelArgs = @import("Common.zig").KernelArgs;
+// TODO: maybe replace this with the zig std elf file
+const ELF = @import("kernel/ELF.zig");
+
+const Interrupts = @import("kernel/Interrupts.zig");
+const Segments = @import("kernel/Segments.zig");
+const Serial = @import("kernel/Serial.zig");
+const Paging = @import("kernel/Paging.zig");
+const KernelArgs = @import("kernel/KernelArgs.zig");
 
 const W = @import("std").unicode.utf8ToUtf16LeStringLiteral;
+const print = @import("kernel/Serial.zig").formatStackPrint;
 
 var memory_map: [*]align(8) uefi.tables.MemoryDescriptor = undefined;
 var memory_map_size: usize = 0;
@@ -18,7 +22,7 @@ var descriptor_version: u32 = undefined;
 
 var page_table: ?[*]align(4096) Paging.Pdpte = null;
 
-var ranges: ?[]align(8) MemoryMap.MemoryRange = null;
+var ranges: ?[]align(8) KernelArgs.MemoryRange = null;
 
 var final_memory_address: usize = 0;
 
@@ -45,7 +49,7 @@ fn getMemoryMap() void {
     }
 }
 
-fn loadFile(comptime filePath: []const u8) []u8 {
+fn loadFile(comptime filePath: []const u8) []align(std.heap.pageSize()) u8 {
     var file_system: ?*uefi.protocol.SimpleFileSystem = undefined;
     uefi.system_table.boot_services.?.locateProtocol(&uefi.protocol.SimpleFileSystem.guid, null, @ptrCast(&file_system)).err() catch {
         Serial.print("Could not locate simple file protocol\n");
@@ -69,15 +73,19 @@ fn loadFile(comptime filePath: []const u8) []u8 {
         @ptrCast(&file_info),
     ) == uefi.Status.buffer_too_small) {}
 
-    var file_buffer = uefi.pool_allocator.alloc(u8, file_info.file_size) catch unreachable;
+    const file_size_in_pages = std.math.divCeil(usize, file_info.file_size, 4096) catch unreachable;
 
-    file.read(&file_buffer.len, file_buffer.ptr).err() catch |err| {
+    var file_buffer_size: usize = file_info.file_size;
+    var file_buffer: [*]align(std.heap.pageSize()) u8 = undefined;
+    uefi.system_table.boot_services.?.allocatePages(.allocate_any_pages, .loader_data, file_size_in_pages, &file_buffer).err() catch unreachable;
+
+    file.read(&file_buffer_size, file_buffer).err() catch |err| {
         Serial.print("encountered error: ");
         Serial.print(@errorName(err));
         Serial.print("\n");
     };
 
-    return file_buffer;
+    return file_buffer[0..(file_size_in_pages * std.heap.pageSize())];
 }
 
 fn getOrCreatePage(t: type, p: *anyopaque) ![*]align(4096) t {
@@ -133,7 +141,7 @@ fn mapMemory(virtual_address: usize, physical_address: usize) !void {
 fn parseMemoryMap() void {
     if (ranges == null) {
         const ranges_len = memory_map_size / memory_map_descriptor_size;
-        var ranges_ptr: [*]MemoryMap.MemoryRange = undefined;
+        var ranges_ptr: [*]KernelArgs.MemoryRange = undefined;
         uefi.system_table.boot_services.?.allocatePool(
             EfiMemoryMap,
             ranges_len,
@@ -152,7 +160,7 @@ fn parseMemoryMap() void {
         if (current_memory_descriptor.physical_start + (current_memory_descriptor.number_of_pages * 4096) > final_memory_address)
             final_memory_address = current_memory_descriptor.physical_start + (current_memory_descriptor.number_of_pages * 4096);
 
-        const memType: MemoryMap.MemoryType = switch (current_memory_descriptor.type) {
+        const memType: KernelArgs.MemoryType = switch (current_memory_descriptor.type) {
             .conventional_memory, .boot_services_code, .boot_services_data, .persistent_memory, .loader_data, .loader_code => .Free,
             EfiKernelMemory => .Kernel,
             EfiMemoryMap => .MemoryMap,
@@ -183,6 +191,7 @@ fn parseMemoryMap() void {
 }
 
 pub fn main() noreturn {
+    const bs = uefi.system_table.boot_services.?;
     const out = uefi.system_table.con_out.?;
 
     _ = out.clearScreen();
@@ -229,6 +238,21 @@ pub fn main() noreturn {
         }
     }
 
+    // Set up our interrupt table
+    var idtr: *align(8) Interrupts.IdtDescriptor = undefined;
+    var idt: [*]align(8) Interrupts.GateDescriptor = undefined;
+    const num_interrupts: u64 = 256;
+
+    bs.allocatePool(EfiKernelMemory, @sizeOf(Interrupts.IdtDescriptor), @ptrCast(&idtr)).err() catch unreachable;
+    bs.allocatePool(EfiKernelMemory, @sizeOf(Interrupts.GateDescriptor) * num_interrupts, @ptrCast(&idt)).err() catch unreachable;
+
+    // Set up our global descriptor table
+    var gdtr: *align(8) Segments.GdtDescriptor = undefined;
+    var gdt: [*]align(8) Segments.SegmentDescriptor = undefined;
+
+    bs.allocatePool(EfiKernelMemory, @sizeOf(Segments.GdtDescriptor), @ptrCast(&gdtr)).err() catch unreachable;
+    bs.allocatePool(EfiKernelMemory, @sizeOf(Segments.SegmentDescriptor) * 4, @ptrCast(&gdt)).err() catch unreachable;
+
     getMemoryMap();
     parseMemoryMap();
 
@@ -236,14 +260,67 @@ pub fn main() noreturn {
         Serial.print("Failed to exit boot services!\n");
     };
 
-    // Load our page table
+    @memset(idt[0..num_interrupts], .{});
+
+    idtr.offset = @intFromPtr(idt);
+    idtr.size = (@sizeOf(Interrupts.GateDescriptor) * num_interrupts) - 1;
+
+    print("IDTR: 0x{X} 0x{X} {*} {*}\n", .{ idtr.size, idtr.offset, idtr, idt });
+
+    @memset(gdt[0..1], .{});
+
+    // Now set our segment descriptors
+    @memset(gdt[1..4], Segments.SegmentDescriptor{
+        .flags = .{
+            .long_mode = true,
+        },
+        .access_byte = .{
+            .present = true,
+            .rw = true,
+            .descriptor_type = true,
+            .dc = false,
+        },
+    });
+
+    // Kernel Code
+    gdt[1].access_byte.executable = true;
+
+    // Kernel Data
+    gdt[2].access_byte.executable = false;
+
+    // Kernel Stack
+    gdt[3].access_byte.executable = false;
+    gdt[3].access_byte.dc = true;
+
+    gdtr.size = (@sizeOf(Segments.SegmentDescriptor) * 4) - 1;
+    gdtr.offset = @intFromPtr(gdt);
+
+    print("GDTR: 0x{X} 0x{X} {*} {*}\n", .{ gdtr.size, gdtr.offset, gdtr, gdt });
+
+    // Load our page table and jump to our code segment
     asm volatile (
         \\ mov %[pml4], %cr3
+        \\ cli
+        \\ lgdt (%[gdtr])
+        \\ push $0x08
+        \\ lea .reload_CS(%rip), %rax
+        \\ push %rax
+        \\ lretq
+        \\ .reload_CS:
+        \\ mov $0x10, %ax
+        \\ mov %ax, %ds
+        \\ mov $0x18, %ax
+        \\ mov %ax, %ss
+        \\ mov $0x00, %ax
+        \\ mov %ax, %es
+        \\ mov %ax, %gs
+        \\ mov %ax, %fs
+        \\ lidt (%[idtr])
         :
         : [pml4] "r" (page_table.?),
+          [gdtr] "r" (gdtr),
+          [idtr] "r" (idtr),
     );
-
-    // TODO: maybe load sections into memory for easier kernel debugging?
 
     // Load the kernel into memory since its memory mapped
     for (0..elf_hdr.program_header_entry_count) |i| {
@@ -268,8 +345,8 @@ pub fn main() noreturn {
 
     // Guaranteed to live until the Kernel cleans up the bootloader data/code
     kernel_args = .{
-        .memory_map = @alignCast(ranges.?.ptr),
-        .memory_map_len = ranges.?.len,
+        .memory_map = ranges.?,
+        .idt = idt[0..num_interrupts],
     };
 
     asm volatile (

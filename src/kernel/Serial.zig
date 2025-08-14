@@ -1,3 +1,4 @@
+const fmt = @import("std").fmt;
 const IO = @import("IO.zig");
 
 const outb = IO.outb;
@@ -30,4 +31,10 @@ pub fn print(string: []const u8) void {
     for (string) |c| {
         outb(COM1 + 0, c);
     }
+}
+
+pub fn formatStackPrint(comptime fmtString: []const u8, args: anytype) void {
+    var string_buffer: [256]u8 = [_]u8{0} ** 256;
+    const str = fmt.bufPrint(&string_buffer, fmtString, args) catch unreachable;
+    print(str);
 }
