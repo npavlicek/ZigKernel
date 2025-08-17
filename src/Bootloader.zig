@@ -22,13 +22,13 @@ var descriptor_version: u32 = undefined;
 
 var page_table: ?[*]align(4096) Paging.Pdpte = null;
 
-var ranges: ?[]align(8) KernelArgs.MemoryRange = null;
+var pages: ?[*]align(8) KernelArgs.PageFrameMetadata = undefined;
+var pages_len: usize = undefined;
 
 var final_memory_address: usize = 0;
 
 const EfiKernelMemory: uefi.tables.MemoryType = @enumFromInt(0x80000001);
 const EfiPagingMemory: uefi.tables.MemoryType = @enumFromInt(0x80000002);
-const EfiMemoryMap: uefi.tables.MemoryType = @enumFromInt(0x80000003);
 
 var kernel_args: KernelArgs = undefined;
 
@@ -139,55 +139,40 @@ fn mapMemory(virtual_address: usize, physical_address: usize) !void {
 }
 
 fn parseMemoryMap() void {
-    if (ranges == null) {
-        const ranges_len = memory_map_size / memory_map_descriptor_size;
-        var ranges_ptr: [*]KernelArgs.MemoryRange = undefined;
-        uefi.system_table.boot_services.?.allocatePool(
-            EfiMemoryMap,
-            ranges_len,
-            @ptrCast(&ranges_ptr),
-        ).err() catch unreachable;
-        ranges = ranges_ptr[0..ranges_len];
+    if (pages == null) {
+        var current_descriptor_address: usize = @intFromPtr(memory_map);
+        const final_descriptor_address: usize = current_descriptor_address + memory_map_size;
+        while (current_descriptor_address < final_descriptor_address) : (current_descriptor_address += memory_map_descriptor_size) {
+            const current_memory_descriptor = @as(*uefi.tables.MemoryDescriptor, @ptrFromInt(current_descriptor_address)).*;
+
+            if (current_memory_descriptor.physical_start + (current_memory_descriptor.number_of_pages * 4096) > final_memory_address)
+                final_memory_address = current_memory_descriptor.physical_start + (current_memory_descriptor.number_of_pages * 4096);
+        }
+
+        pages_len = (final_memory_address / std.heap.pageSize());
+        const pages_len_in_bytes: usize = pages_len * @sizeOf(KernelArgs.PageFrameMetadata);
+
+        uefi.system_table.boot_services.?.allocatePool(EfiKernelMemory, pages_len_in_bytes, @ptrCast(&pages.?)).err() catch unreachable;
     }
 
-    var current_address: usize = @intFromPtr(memory_map);
-    const final_address = current_address + memory_map_size;
-    var current_index: usize = 0;
-    var start_block = true;
-    while (current_address < final_address) : (current_address += memory_map_descriptor_size) {
-        const current_memory_descriptor = @as(*uefi.tables.MemoryDescriptor, @ptrFromInt(current_address)).*;
+    var current_descriptor_address: usize = @intFromPtr(memory_map);
+    const final_descriptor_address = current_descriptor_address + memory_map_size;
+    while (current_descriptor_address < final_descriptor_address) : (current_descriptor_address += memory_map_descriptor_size) {
+        const current_memory_descriptor = @as(*uefi.tables.MemoryDescriptor, @ptrFromInt(current_descriptor_address)).*;
 
-        if (current_memory_descriptor.physical_start + (current_memory_descriptor.number_of_pages * 4096) > final_memory_address)
-            final_memory_address = current_memory_descriptor.physical_start + (current_memory_descriptor.number_of_pages * 4096);
-
-        const memType: KernelArgs.MemoryType = switch (current_memory_descriptor.type) {
+        const memory_type: KernelArgs.MemoryType = switch (current_memory_descriptor.type) {
             .conventional_memory, .boot_services_code, .boot_services_data, .persistent_memory, .loader_data, .loader_code => .Free,
             EfiKernelMemory => .Kernel,
-            EfiMemoryMap => .MemoryMap,
             EfiPagingMemory => .Paging,
             else => .Reserved,
         };
 
-        if (start_block) {
-            ranges.?[current_index].pages = current_memory_descriptor.number_of_pages;
-            ranges.?[current_index].start = current_memory_descriptor.physical_start;
-            ranges.?[current_index].type = memType;
-            current_index += 1;
-            start_block = false;
-            continue;
-        }
-
-        if (ranges.?[current_index - 1].start + (ranges.?[current_index - 1].pages * 4096) == current_memory_descriptor.physical_start and ranges.?[current_index - 1].type == memType) {
-            ranges.?[current_index - 1].pages += current_memory_descriptor.number_of_pages;
-        } else {
-            ranges.?[current_index].pages = current_memory_descriptor.number_of_pages;
-            ranges.?[current_index].start = current_memory_descriptor.physical_start;
-            ranges.?[current_index].type = memType;
-            current_index += 1;
+        var current_page_index: usize = current_memory_descriptor.physical_start / 4096;
+        const final_page_index: usize = current_page_index + current_memory_descriptor.number_of_pages;
+        while (current_page_index < final_page_index) : (current_page_index += 1) {
+            pages.?[current_page_index].type = memory_type;
         }
     }
-
-    ranges.?.len = current_index;
 }
 
 pub fn main() noreturn {
@@ -265,8 +250,6 @@ pub fn main() noreturn {
     idtr.offset = @intFromPtr(idt);
     idtr.size = (@sizeOf(Interrupts.GateDescriptor) * num_interrupts) - 1;
 
-    print("IDTR: 0x{X} 0x{X} {*} {*}\n", .{ idtr.size, idtr.offset, idtr, idt });
-
     @memset(gdt[0..1], .{});
 
     // Now set our segment descriptors
@@ -282,20 +265,17 @@ pub fn main() noreturn {
         },
     });
 
-    // Kernel Code
-    gdt[1].access_byte.executable = true;
+    const kernel_code_segment_index = 1;
+    const kernel_data_segment_index = 2;
+    const kernel_stack_segment_index = 3;
 
-    // Kernel Data
-    gdt[2].access_byte.executable = false;
-
-    // Kernel Stack
-    gdt[3].access_byte.executable = false;
-    gdt[3].access_byte.dc = true;
+    gdt[kernel_code_segment_index].access_byte.executable = true;
+    gdt[kernel_data_segment_index].access_byte.executable = false;
+    gdt[kernel_stack_segment_index].access_byte.executable = false;
+    gdt[kernel_stack_segment_index].access_byte.dc = true;
 
     gdtr.size = (@sizeOf(Segments.SegmentDescriptor) * 4) - 1;
     gdtr.offset = @intFromPtr(gdt);
-
-    print("GDTR: 0x{X} 0x{X} {*} {*}\n", .{ gdtr.size, gdtr.offset, gdtr, gdt });
 
     // Load our page table and jump to our code segment
     asm volatile (
@@ -345,8 +325,9 @@ pub fn main() noreturn {
 
     // Guaranteed to live until the Kernel cleans up the bootloader data/code
     kernel_args = .{
-        .memory_map = ranges.?,
         .idt = idt[0..num_interrupts],
+        .pages = pages.?[0..pages_len],
+        .kernel_code_segment_index = kernel_code_segment_index,
     };
 
     asm volatile (

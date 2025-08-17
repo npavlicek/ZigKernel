@@ -1,18 +1,17 @@
 const Interrupts = @import("Interrupts.zig");
 
-memory_map: []align(8) MemoryRange = undefined,
 idt: []align(8) Interrupts.GateDescriptor = undefined,
+pages: []align(8) PageFrameMetadata = undefined,
+kernel_code_segment_index: u13 = undefined,
+
 
 pub const MemoryType = enum(u3) {
     Free,
     Kernel,
-    MemoryMap,
     Paging,
     Reserved,
 };
 
-pub const MemoryRange = packed struct {
-    start: usize = 0,
-    pages: u64 = 0,
-    type: MemoryType = .Free,
+pub const PageFrameMetadata = packed struct {
+    type: MemoryType = .Reserved,
 };

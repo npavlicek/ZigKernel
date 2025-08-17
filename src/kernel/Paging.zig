@@ -1,5 +1,3 @@
-const mem = @import("std").mem;
-
 pub const Pml4 = packed struct(u64) {
     present: bool = false,
     rw: bool = false,

@@ -36,7 +36,7 @@ export fn _start() linksection(".kernel_start") callconv(.naked) noreturn {
     asm volatile (
         \\ CALLQ *%[kernelTrampoline]
         :
-        : [kernelTrampoline] "rax" (kernelTrampoline),
+        : [kernelTrampoline] "rax" (&kernelTrampoline),
     );
 }
 
