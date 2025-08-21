@@ -19,6 +19,24 @@ pub fn setDefaultInterruptHandlers(idt: []align(8) Interrupts.GateDescriptor, co
     setInterruptAddress(&idt[1], &debugException);
     setInterruptAddress(&idt[2], &nonMaskable);
     setInterruptAddress(&idt[3], &breakpoint);
+    setInterruptAddress(&idt[4], &overflow);
+    setInterruptAddress(&idt[5], &boundRangeExceeded);
+    setInterruptAddress(&idt[6], &invalidOpcode);
+    setInterruptAddress(&idt[7], &deviceNotAvailable);
+    setInterruptAddress(&idt[8], &doubleFault);
+    setInterruptAddress(&idt[9], &coprocessorSegmentOverrun);
+    setInterruptAddress(&idt[10], &invalidTSS);
+    setInterruptAddress(&idt[11], &segmentNotPresent);
+    setInterruptAddress(&idt[12], &stackSegmentFault);
+    setInterruptAddress(&idt[13], &generalProtection);
+    setInterruptAddress(&idt[14], &pageFault);
+    // no 15
+    setInterruptAddress(&idt[16], &fpuFloatingPointError);
+    setInterruptAddress(&idt[17], &alignmentCheck);
+    setInterruptAddress(&idt[18], &machineCheck);
+    setInterruptAddress(&idt[19], &simdFloatingPointError);
+    setInterruptAddress(&idt[20], &virtualizationException);
+    setInterruptAddress(&idt[21], &controlProtectionException);
 }
 
 fn setInterruptAddress(id: *align(8) Interrupts.GateDescriptor, fn_address: *const interrupt_signature) void {
@@ -51,6 +69,9 @@ fn boundRangeExceeded() callconv(.{ .x86_64_interrupt = .{} }) void {
 
 fn invalidOpcode() callconv(.{ .x86_64_interrupt = .{} }) void {
     print("Hit the int3 handler!\n", .{});
+    asm volatile (
+        \\ hlt
+    );
 }
 
 fn deviceNotAvailable() callconv(.{ .x86_64_interrupt = .{} }) void {
