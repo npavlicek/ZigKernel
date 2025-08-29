@@ -31,6 +31,7 @@ sudo mount /dev/loop10 ./mnt
 sudo mkdir -p ./mnt/EFI/Boot
 sudo cp ./zig-out/bin/BOOTx64.efi ./mnt/EFI/Boot/
 sudo cp ./zig-out/bin/kernel.elf ./mnt
+sync
 sudo umount ./mnt
 rm -r ./mnt
 sudo losetup -d /dev/loop10

@@ -34,7 +34,7 @@ pub fn print(string: []const u8) void {
 }
 
 pub fn formatStackPrint(comptime fmtString: []const u8, args: anytype) void {
-    var string_buffer: [256]u8 = [_]u8{0} ** 256;
+    var string_buffer: [500]u8 = [_]u8{0} ** 500;
     const str = fmt.bufPrint(&string_buffer, fmtString, args) catch unreachable;
     print(str);
 }

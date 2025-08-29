@@ -25,7 +25,7 @@ SECTIONS {
 
 	.bss.stack (NOLOAD) : ALIGN(4K) {
 		__stack_start = .;
-		. += 16K;
+		. += 32K;
 		__stack_end = .;
 	}
 }

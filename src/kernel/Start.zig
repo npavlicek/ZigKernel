@@ -1,19 +1,19 @@
 const std = @import("std");
 const main = @import("Kernel.zig").main;
-const KernelArgs = @import("KernelArgs.zig");
+const KernelTypes = @import("KernelTypes.zig");
 const print = @import("Serial.zig").formatStackPrint;
 
 extern const __stack_end: usize;
 extern const __stack_start: usize;
 
-var kernel_args: *KernelArgs = undefined;
+var kernel_args: *KernelTypes.KernelArgs = undefined;
 
 pub fn defaultPanic(
     msg: []const u8,
     first_trace_addr: ?usize,
 ) noreturn {
     @branchHint(.cold);
-    print("KERNEL PANIC: {s} at 0x{X}\n", .{msg, first_trace_addr.?});
+    print("KERNEL PANIC: {s} at 0x{X}\n", .{ msg, first_trace_addr.? });
     @trap();
 }
 

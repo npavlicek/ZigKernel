@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "BOOTx64",
         .root_module = b.createModule(.{
-            .optimize = .ReleaseFast,
+            .optimize = .Debug,
             .root_source_file = b.path("src/Bootloader.zig"),
             .target = b.resolveTargetQuery(.{
                 .cpu_arch = .x86_64,
@@ -27,6 +27,8 @@ pub fn build(b: *std.Build) void {
                 .cpu_features_add = enabled_features,
                 .cpu_features_sub = disabled_features,
             }),
+            .strip = false,
+            .dwarf_format = .@"64",
         }),
     });
 

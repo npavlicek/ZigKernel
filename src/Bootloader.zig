@@ -9,7 +9,7 @@ const Interrupts = @import("kernel/Interrupts.zig");
 const Segments = @import("kernel/Segments.zig");
 const Serial = @import("kernel/Serial.zig");
 const Paging = @import("kernel/Paging.zig");
-const KernelArgs = @import("kernel/KernelArgs.zig");
+const KernelTypes = @import("kernel/KernelTypes.zig");
 
 const W = @import("std").unicode.utf8ToUtf16LeStringLiteral;
 const print = @import("kernel/Serial.zig").formatStackPrint;
@@ -22,15 +22,29 @@ var descriptor_version: u32 = undefined;
 
 var page_table: ?[*]align(4096) Paging.Pdpte = null;
 
-var pages: ?[*]align(8) KernelArgs.PageFrameMetadata = undefined;
-var pages_len: usize = undefined;
+var pages: [*]align(8) KernelTypes.PageFrameMetadata = undefined;
+var pages_len: usize = 0;
 
 var final_memory_address: usize = 0;
 
 const EfiKernelMemory: uefi.tables.MemoryType = @enumFromInt(0x80000001);
 const EfiPagingMemory: uefi.tables.MemoryType = @enumFromInt(0x80000002);
 
-var kernel_args: KernelArgs = undefined;
+var kernel_args: KernelTypes.KernelArgs = undefined;
+
+var image_base: usize = undefined;
+
+pub fn defaultPanic(
+    msg: []const u8,
+    first_trace_addr: ?usize,
+) noreturn {
+    @branchHint(.cold);
+    print("BOOTLOADER PANIC: {s} at 0x{X}\n", .{ msg, first_trace_addr.? });
+    print("Minus image base: 0x{X}\n", .{first_trace_addr.? - image_base});
+    @trap();
+}
+
+pub const panic = std.debug.FullPanic(defaultPanic);
 
 fn getMemoryMap() void {
     if (memory_map_size == 0) {
@@ -139,7 +153,7 @@ fn mapMemory(virtual_address: usize, physical_address: usize) !void {
 }
 
 fn parseMemoryMap() void {
-    if (pages == null) {
+    if (pages_len == 0) {
         var current_descriptor_address: usize = @intFromPtr(memory_map);
         const final_descriptor_address: usize = current_descriptor_address + memory_map_size;
         while (current_descriptor_address < final_descriptor_address) : (current_descriptor_address += memory_map_descriptor_size) {
@@ -149,18 +163,20 @@ fn parseMemoryMap() void {
                 final_memory_address = current_memory_descriptor.physical_start + (current_memory_descriptor.number_of_pages * 4096);
         }
 
-        pages_len = (final_memory_address / std.heap.pageSize());
-        const pages_len_in_bytes: usize = pages_len * @sizeOf(KernelArgs.PageFrameMetadata);
+        pages_len = (final_memory_address / 4096);
+        const pages_len_in_bytes: usize = pages_len * @sizeOf(KernelTypes.PageFrameMetadata);
 
-        uefi.system_table.boot_services.?.allocatePool(EfiKernelMemory, pages_len_in_bytes, @ptrCast(&pages.?)).err() catch unreachable;
+        uefi.system_table.boot_services.?.allocatePool(EfiKernelMemory, pages_len_in_bytes, @ptrCast(&pages)).err() catch unreachable;
+
+        @memset(pages[0..pages_len], .{});
     }
 
     var current_descriptor_address: usize = @intFromPtr(memory_map);
     const final_descriptor_address = current_descriptor_address + memory_map_size;
     while (current_descriptor_address < final_descriptor_address) : (current_descriptor_address += memory_map_descriptor_size) {
-        const current_memory_descriptor = @as(*uefi.tables.MemoryDescriptor, @ptrFromInt(current_descriptor_address)).*;
+        const current_memory_descriptor = @as(*align(8) uefi.tables.MemoryDescriptor, @ptrFromInt(current_descriptor_address)).*;
 
-        const memory_type: KernelArgs.MemoryType = switch (current_memory_descriptor.type) {
+        const memory_type: KernelTypes.MemoryType = switch (current_memory_descriptor.type) {
             .conventional_memory, .boot_services_code, .boot_services_data, .persistent_memory, .loader_data, .loader_code => .Free,
             EfiKernelMemory => .Kernel,
             EfiPagingMemory => .Paging,
@@ -170,7 +186,7 @@ fn parseMemoryMap() void {
         var current_page_index: usize = current_memory_descriptor.physical_start / 4096;
         const final_page_index: usize = current_page_index + current_memory_descriptor.number_of_pages;
         while (current_page_index < final_page_index) : (current_page_index += 1) {
-            pages.?[current_page_index].type = memory_type;
+            pages[current_page_index].type = memory_type;
         }
     }
 }
@@ -184,6 +200,13 @@ pub fn main() noreturn {
     Serial.init() catch {
         _ = out.outputString(W("Failed to initialize Serial IO"));
     };
+
+    var loaded_image: ?*uefi.protocol.LoadedImage = undefined;
+    uefi.system_table.boot_services.?.handleProtocol(uefi.handle, &uefi.protocol.LoadedImage.guid, @ptrCast(&loaded_image)).err() catch unreachable;
+    if (loaded_image) |image| {
+        print("Image Base: {*}\n", .{image.image_base});
+        image_base = @intFromPtr(image.image_base);
+    }
 
     // Load up our kernel
     const kernel_bin = loadFile("\\kernel.elf");
@@ -200,12 +223,13 @@ pub fn main() noreturn {
     // Map our kernel
     const elf_hdr: *ELF.Header64 = @alignCast(@ptrCast(kernel_bin.ptr));
     for (0..elf_hdr.program_header_entry_count) |i| {
-        const cur_entry: *ELF.ProgramHeader64 = @alignCast(@ptrCast(kernel_bin.ptr + elf_hdr.program_header_off + (i * elf_hdr.program_header_size)));
+        var cur_entry: ELF.ProgramHeader64 = undefined;
+        @memcpy(@as([*]u8, @ptrCast(&cur_entry))[0..@sizeOf(ELF.ProgramHeader64)], kernel_bin.ptr + elf_hdr.program_header_off + (i * elf_hdr.program_header_size));
         if (cur_entry.type == .Load) {
-            var start: usize = cur_entry.*.virtual_address;
+            var start: usize = cur_entry.virtual_address;
             start &= ~@as(usize, 0xFFF);
 
-            var end: usize = cur_entry.*.virtual_address + cur_entry.*.memory_size;
+            var end: usize = cur_entry.virtual_address + cur_entry.memory_size;
             if (end & 0xFFF != 0)
                 end += 0x1000;
             end &= ~@as(usize, 0xFFF);
@@ -281,30 +305,14 @@ pub fn main() noreturn {
     asm volatile (
         \\ mov %[pml4], %cr3
         \\ cli
-        \\ lgdt (%[gdtr])
-        \\ push $0x08
-        \\ lea .reload_CS(%rip), %rax
-        \\ push %rax
-        \\ lretq
-        \\ .reload_CS:
-        \\ mov $0x10, %ax
-        \\ mov %ax, %ds
-        \\ mov $0x18, %ax
-        \\ mov %ax, %ss
-        \\ mov $0x00, %ax
-        \\ mov %ax, %es
-        \\ mov %ax, %gs
-        \\ mov %ax, %fs
-        \\ lidt (%[idtr])
         :
         : [pml4] "r" (page_table.?),
-          [gdtr] "r" (gdtr),
-          [idtr] "r" (idtr),
     );
 
     // Load the kernel into memory since its memory mapped
     for (0..elf_hdr.program_header_entry_count) |i| {
-        const cur_entry: *ELF.ProgramHeader64 = @alignCast(@ptrCast(kernel_bin.ptr + elf_hdr.program_header_off + (i * elf_hdr.program_header_size)));
+        var cur_entry: ELF.ProgramHeader64 = undefined;
+        @memcpy(@as([*]u8, @ptrCast(&cur_entry))[0..@sizeOf(ELF.ProgramHeader64)], kernel_bin.ptr + elf_hdr.program_header_off + (i * elf_hdr.program_header_size));
 
         if (cur_entry.type == .Load) {
             var file_index: usize = 0;
@@ -326,9 +334,30 @@ pub fn main() noreturn {
     // Guaranteed to live until the Kernel cleans up the bootloader data/code
     kernel_args = .{
         .idt = idt[0..num_interrupts],
-        .pages = pages.?[0..pages_len],
+        .pages = pages[0..pages_len],
         .kernel_code_segment_index = kernel_code_segment_index,
     };
+
+    asm volatile (
+        \\ lgdt (%[gdtr])
+        \\ push $0x08
+        \\ lea .reload_CS(%rip), %rax
+        \\ push %rax
+        \\ lretq
+        \\ .reload_CS:
+        \\ mov $0x10, %ax
+        \\ mov %ax, %ds
+        \\ mov $0x18, %ax
+        \\ mov %ax, %ss
+        \\ mov $0x00, %ax
+        \\ mov %ax, %es
+        \\ mov %ax, %gs
+        \\ mov %ax, %fs
+        \\ lidt (%[idtr])
+        :
+        : [gdtr] "r" (gdtr),
+          [idtr] "r" (idtr),
+    );
 
     asm volatile (
         \\ PUSHQ %[args]

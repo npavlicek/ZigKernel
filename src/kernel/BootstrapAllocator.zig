@@ -1,6 +1,6 @@
 const std = @import("std");
-const PageFrameMetadata = @import("KernelArgs.zig").PageFrameMetadata;
-const MemoryType = @import("KernelArgs.zig").MemoryType;
+const PageFrameMetadata = @import("KernelTypes.zig").PageFrameMetadata;
+const MemoryType = @import("KernelTypes.zig").MemoryType;
 
 pages: []align(8) PageFrameMetadata,
 

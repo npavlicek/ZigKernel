@@ -3,7 +3,7 @@ const print = @import("Serial.zig").formatStackPrint;
 
 const interrupt_signature = fn () callconv(.{ .x86_64_interrupt = .{} }) void;
 
-pub fn setDefaultInterruptHandlers(idt: []align(8) Interrupts.GateDescriptor, code_segment_idx: u13) void {
+pub inline fn setDefaultInterruptHandlers(idt: []align(8) Interrupts.GateDescriptor, code_segment_idx: u13) void {
     const default_descriptor = Interrupts.GateDescriptor{
         .gate_type = .TrapGate,
         .segment_selector = .{
@@ -39,7 +39,7 @@ pub fn setDefaultInterruptHandlers(idt: []align(8) Interrupts.GateDescriptor, co
     setInterruptAddress(&idt[21], &controlProtectionException);
 }
 
-fn setInterruptAddress(id: *align(8) Interrupts.GateDescriptor, fn_address: *const interrupt_signature) void {
+inline fn setInterruptAddress(id: *align(8) Interrupts.GateDescriptor, fn_address: *const interrupt_signature) void {
     id.*.offset_low = @truncate(@intFromPtr(fn_address));
     id.*.offset_high = @truncate(@intFromPtr(fn_address) >> 16);
 }

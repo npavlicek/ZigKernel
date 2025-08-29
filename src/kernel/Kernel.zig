@@ -1,16 +1,16 @@
 const std = @import("std");
-const KernelArgs = @import("KernelArgs.zig");
+const KernelTypes = @import("KernelTypes.zig");
 const InterruptHandlers = @import("InterruptHandlers.zig");
-const BootstrapAllocator = @import("BootstrapAllocator.zig");
+const BuddyAllocator = @import("BuddyAllocator.zig");
 const print = @import("Serial.zig").formatStackPrint;
 
-pub fn main(args: KernelArgs) noreturn {
+pub fn main(args: KernelTypes.KernelArgs) noreturn {
     InterruptHandlers.setDefaultInterruptHandlers(args.idt, args.kernel_code_segment_index);
 
     print("Hello world from the kernel!\n", .{});
 
-    var allocator = BootstrapAllocator.create(args.pages);
-    _ = &allocator;
+    var allocator2 = BuddyAllocator.create(args.pages);
+    _ = &allocator2;
 
     while (true) {}
 
