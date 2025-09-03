@@ -57,7 +57,10 @@ fn nonMaskable() callconv(.{ .x86_64_interrupt = .{} }) void {
 }
 
 fn breakpoint() callconv(.{ .x86_64_interrupt = .{} }) void {
-    print("Hit the breakpoint!\n", .{});
+    print("BREAKPOINT", .{});
+    asm volatile (
+        \\ hlt
+    );
 }
 
 fn overflow() callconv(.{ .x86_64_interrupt = .{} }) void {
@@ -68,7 +71,7 @@ fn boundRangeExceeded() callconv(.{ .x86_64_interrupt = .{} }) void {
 }
 
 fn invalidOpcode() callconv(.{ .x86_64_interrupt = .{} }) void {
-    print("Hit the int3 handler!\n", .{});
+    print("INVALID OPCODE", .{});
     asm volatile (
         \\ hlt
     );

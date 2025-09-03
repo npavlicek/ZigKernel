@@ -10,7 +10,9 @@ pub fn main(args: KernelTypes.KernelArgs) noreturn {
     print("Hello world from the kernel!\n", .{});
 
     var allocator2 = BuddyAllocator.create(args.pages);
-    _ = &allocator2;
+    const val = allocator2.allocatePages(24) catch unreachable;
+
+    print("{*}\n", .{val});
 
     while (true) {}
 
