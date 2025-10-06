@@ -78,7 +78,7 @@ fn printOrders(this: *Allocator) void {
     }
 }
 
-fn splitBlock(this: *Allocator, order: usize) void {
+fn splitBlock(this: *Allocator, order: u8) void {
     // These two cases will be panics because that would indicate invalid kernel logic which is irrecoverable
     if (order > max_order or order < 1)
         std.debug.panicExtra(@returnAddress(), "({s}:{},{}) cannot split order {}, out of range", .{ @src().file, @src().line, @src().column, order });
@@ -87,7 +87,7 @@ fn splitBlock(this: *Allocator, order: usize) void {
         std.debug.panicExtra(@returnAddress(), "({s}:{},{}) requested order {} is null", .{ @src().file, @src().line, @src().column, order });
     };
 
-    const order_num_pages = 0x1 << order;
+    const order_num_pages = @as(u8, 0x1) << @intCast(order);
 
     const first_block_index = (first_block - this.pages.ptr);
     const second_block_index = order_num_pages / 2 + first_block_index;
@@ -113,25 +113,33 @@ fn splitBlock(this: *Allocator, order: usize) void {
     this.orders[order - 1] = first_block;
 }
 
-fn findFreeBlockOrSplit(this: *Allocator, requested_order: usize) Error!void {
-    const found_free_order = blk: for (requested_order..(max_order + 1)) |current_order| {
-        if (this.orders[current_order] != null) break :blk current_order;
+fn findFreeBlockOrSplit(this: *Allocator, requested_order: u8) Error!void {
+    const found_free_order: u8 = blk: for (requested_order..(max_order + 1)) |current_order| {
+        if (this.orders[current_order] != null) break :blk @intCast(current_order);
     } else return Error.OutOfMemory;
 
-    splitBlock(this, found_free_order);
-
-    print("Found a free block at order: {}\n", .{found_free_order});
+    var current_order = found_free_order;
+    while (current_order != requested_order) : (current_order -= 1) {
+        splitBlock(this, current_order);
+    }
 }
 
-pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]u8 {
+pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero u8 {
     // First determine the max order we need
     const requested_order = std.math.log2_int_ceil(@TypeOf(num_pages), num_pages);
     if (requested_order > max_order)
         return Error.RequestTooLarge;
 
+    // Verify we have a free block or split a higher order to get desired order block
     try findFreeBlockOrSplit(this, requested_order);
 
-    return @as([*]u8, @ptrFromInt(0xDEADBEEF))[0..1];
+    const address: [*]allowzero u8 = @ptrFromInt(this.addressToIdx(this.orders[requested_order].?) * 4096);
+    this.orders[requested_order].?.type = .Allocated;
+    this.orders[requested_order] = this.orders[requested_order].?.next_block;
+
+    const size: usize = (@as(usize, 0x1) << @intCast(requested_order)) * 4096;
+
+    return address[0..size];
 }
 
 pub fn freePages(this: *Allocator, pages: anytype) void {
