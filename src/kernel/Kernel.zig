@@ -9,18 +9,35 @@ pub fn main(args: KernelTypes.KernelArgs) noreturn {
 
     print("Hello world from the kernel!\n", .{});
 
-    var allocator2 = BuddyAllocator.create(args.pages);
-    var val = allocator2.allocatePages(24) catch unreachable;
-    print("Requested: 24 pages, got: {} at: ", .{val.len / 4096});
-    print("{*}\n", .{val});
+    // TODO:
+    // 1. Complete buddy allocator
+    // 1.5. Test the buddy allocator
+    // 2. Remove identity map of physical memory
+    // 3. Improve the interrupt handlers and panic handling!
 
-    val = allocator2.allocatePages(100) catch unreachable;
-    print("Requested: 100 pages, got: {} at: ", .{val.len / 4096});
-    print("{*}\n", .{val});
+    var allocator = BuddyAllocator.create(args.pages);
 
-    val = allocator2.allocatePages(1024) catch unreachable;
-    print("Requested: 1024 pages, got: {} at: ", .{val.len / 4096});
-    print("{*}\n", .{val});
+    var allocs: [10_000]*allowzero align(4096) u8 = [_]*allowzero align(4096) u8{undefined} ** 10_000;
+
+    var count: usize = 0;
+    while (allocator.allocatePages(1024)) |val| {
+        allocs[count] = @ptrCast(val.ptr);
+        count += 1;
+    } else |_| {}
+
+    print("Got {} allocations!", .{count});
+
+    const allocs_to_free = allocs[0..count];
+
+    count = 0;
+    for (allocs_to_free) |alloc| {
+        allocator.freePages(alloc) catch |err| {
+            std.debug.panic("Caught an error: {s}\n", .{@errorName(err)});
+        };
+        count += 1;
+    }
+
+    print("Freed {} allocations!\n", .{count});
 
     while (true) {}
 

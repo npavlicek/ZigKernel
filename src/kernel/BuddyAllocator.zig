@@ -13,6 +13,8 @@ pages: []PageFrameMetadata = undefined,
 pub const Error = error{
     RequestTooLarge,
     OutOfMemory,
+    DoubleFree,
+    FailedToFree,
 };
 
 inline fn checkPageAlignment(address: usize) void {
@@ -60,7 +62,7 @@ fn addBlocks(this: *Allocator, start_address: usize, pages: usize) void {
     }
 }
 
-fn addressToIdx(this: *Allocator, page_frame_metadata_ptr: *PageFrameMetadata) usize {
+fn pageFrameAddressToIdx(this: *Allocator, page_frame_metadata_ptr: *PageFrameMetadata) usize {
     return (page_frame_metadata_ptr - this.pages.ptr);
 }
 
@@ -68,10 +70,10 @@ fn printOrders(this: *Allocator) void {
     for (0..(max_order + 1)) |idx| {
         if (this.orders[idx]) |order| {
             var current_order = order;
-            print("{}: [{}],{*} -> ", .{ idx, this.addressToIdx(current_order), current_order });
+            print("{}: [{}],{*} -> ", .{ idx, this.pageFrameAddressToIdx(current_order), current_order });
             while (current_order.next_block) |next| {
                 current_order = next;
-                print("[{}]{*} -> ", .{ this.addressToIdx(current_order), current_order });
+                print("[{}]{*} -> ", .{ this.pageFrameAddressToIdx(current_order), current_order });
             }
             print("\n", .{});
         }
@@ -87,7 +89,7 @@ fn splitBlock(this: *Allocator, order: u8) void {
         std.debug.panicExtra(@returnAddress(), "({s}:{},{}) requested order {} is null", .{ @src().file, @src().line, @src().column, order });
     };
 
-    const order_num_pages = @as(u8, 0x1) << @intCast(order);
+    const order_num_pages = @as(usize, 0x1) << @intCast(order);
 
     const first_block_index = (first_block - this.pages.ptr);
     const second_block_index = order_num_pages / 2 + first_block_index;
@@ -124,7 +126,7 @@ fn findFreeBlockOrSplit(this: *Allocator, requested_order: u8) Error!void {
     }
 }
 
-pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero u8 {
+pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero align(4096) u8 {
     // First determine the max order we need
     const requested_order = std.math.log2_int_ceil(@TypeOf(num_pages), num_pages);
     if (requested_order > max_order)
@@ -133,7 +135,7 @@ pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero u8 {
     // Verify we have a free block or split a higher order to get desired order block
     try findFreeBlockOrSplit(this, requested_order);
 
-    const address: [*]allowzero u8 = @ptrFromInt(this.addressToIdx(this.orders[requested_order].?) * 4096);
+    const address: [*]allowzero align(4096) u8 = @ptrFromInt(this.pageFrameAddressToIdx(this.orders[requested_order].?) * 4096);
     this.orders[requested_order].?.type = .Allocated;
     this.orders[requested_order] = this.orders[requested_order].?.next_block;
 
@@ -142,9 +144,93 @@ pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero u8 {
     return address[0..size];
 }
 
-pub fn freePages(this: *Allocator, pages: anytype) void {
-    _ = pages;
-    _ = this;
+fn removeBlock(this: *Allocator, block: *allowzero PageFrameMetadata) void {
+    var cur_block_opt = this.orders[block.order];
+    var prev_block_opt: ?*PageFrameMetadata = null;
+
+    var count: usize = 0;
+    while (cur_block_opt) |cur_block| {
+        if (count > 10_000)
+            @panic("Took too long to find block");
+
+        if (cur_block == block) {
+            if (prev_block_opt) |prev_block| {
+                prev_block.next_block = cur_block.next_block;
+            } else {
+                this.orders[block.order] = cur_block.next_block;
+            }
+            block.next_block = null;
+            return;
+        }
+
+        prev_block_opt = cur_block;
+        cur_block_opt = cur_block.next_block;
+        count += 1;
+    }
+
+    @panic("Block does not exist at supplied order");
+}
+
+fn prependBlock(this: *Allocator, page_idx: usize) void {
+    this.pages[page_idx].next_block = this.orders[this.pages[page_idx].order];
+    this.orders[this.pages[page_idx].order] = &this.pages[page_idx];
+}
+
+fn mergeBuddy(this: *Allocator, address: usize) void {
+    checkPageAlignment(address);
+    const page_idx: usize = @divExact(address, 4096);
+
+    if (this.pages[page_idx].order >= max_order) return;
+
+    if (this.pages[page_idx].type != .Free)
+        std.debug.panic("Trying to merge a non-freed block: 0x{X}\n", .{address});
+
+    const block_size: usize = (@as(usize, @intCast(0x1)) << @intCast(this.pages[page_idx].order)) * 4096;
+    const buddy_address = address ^ block_size;
+    const buddy_block_idx = @divExact(buddy_address, 4096);
+
+    if (this.pages[buddy_block_idx].type != .Free)
+        return;
+
+    // Two unequal order blocks cannot be merged
+    if (this.pages[page_idx].order != this.pages[buddy_block_idx].order)
+        return;
+
+    // Remove these blocks from the orders arrays
+    this.removeBlock(&this.pages[page_idx]);
+    this.removeBlock(&this.pages[buddy_block_idx]);
+
+    // Handle kernel page metadata second
+    if (page_idx < buddy_block_idx) {
+        this.pages[buddy_block_idx].type = .Compound;
+        this.pages[buddy_block_idx].order = undefined;
+        this.pages[page_idx].order += 1;
+
+        this.prependBlock(page_idx);
+        this.mergeBuddy(address);
+    } else {
+        this.pages[page_idx].type = .Compound;
+        this.pages[page_idx].order = undefined;
+        this.pages[buddy_block_idx].order += 1;
+
+        this.prependBlock(page_idx);
+        this.mergeBuddy(buddy_address);
+    }
+}
+
+pub fn freePages(this: *Allocator, pages: *allowzero align(4096) anyopaque) Error!void {
+    const page_idx: usize = @divExact(@intFromPtr(pages), 4096);
+
+    // TODO: Maybe if they supply us with a .Compound type we may rewind, and use the beginning of the block type?
+    if (this.pages[page_idx].type != .Allocated)
+        return Error.FailedToFree;
+
+    if (this.pages[page_idx].type == .Free)
+        return Error.DoubleFree;
+
+    this.pages[page_idx].type = .Free;
+    this.prependBlock(page_idx);
+    this.mergeBuddy(@intFromPtr(pages));
 }
 
 pub fn create(pages: []PageFrameMetadata) Allocator {

@@ -13,7 +13,11 @@ pub fn defaultPanic(
     first_trace_addr: ?usize,
 ) noreturn {
     @branchHint(.cold);
-    print("KERNEL PANIC: {s} at 0x{X}\n", .{ msg, first_trace_addr.? });
+    if (first_trace_addr) |fta| {
+        print("KERNEL PANIC: {s} at 0x{X}\n", .{ msg, fta });
+    } else {
+        print("KERNEL PANIC: {s}\n", .{msg});
+    }
     @trap();
 }
 

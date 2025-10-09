@@ -14,6 +14,7 @@ pub const MemoryType = enum(u3) {
 pub const PageFrameMetadata = struct {
     type: MemoryType = .Undefined,
     next_block: ?*PageFrameMetadata = null,
+    /// The order of a block only matters for the first page of a block
     order: u8 = undefined,
 };
 
