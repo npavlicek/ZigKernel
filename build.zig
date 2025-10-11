@@ -32,24 +32,46 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const kernel_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .ofmt = .elf,
+        .cpu_features_add = enabled_features,
+        .cpu_features_sub = disabled_features,
+    });
+
     const kernel = b.addExecutable(.{
         .name = "kernel.elf",
         .root_module = b.createModule(.{
             .optimize = .Debug,
             .root_source_file = b.path("src/kernel/Start.zig"),
-            .target = b.resolveTargetQuery(.{
-                .cpu_arch = .x86_64,
-                .os_tag = .freestanding,
-                .abi = .none,
-                .ofmt = .elf,
-                .cpu_features_add = enabled_features,
-                .cpu_features_sub = disabled_features,
-            }),
+            .target = kernel_target,
             .code_model = .kernel,
             .dwarf_format = .@"64",
+            .strip = false,
         }),
     });
     kernel.setLinkerScript(b.path("./config/kernel.ld"));
+
+    const kernel_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/root.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64 }),
+    });
+
+    const kernel_tests_options = std.Build.TestOptions{
+        .name = "BuddyAllocatorTests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/AllTests.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64 }),
+        }),
+    };
+
+    const kernel_tests = b.addTest(kernel_tests_options);
+    kernel_tests.root_module.addImport("Kernel", kernel_module);
+
+    const kernel_tests_step = b.step("tests", "run tests");
+    kernel_tests_step.dependOn(&kernel_tests.step);
 
     b.installArtifact(kernel);
     b.installArtifact(exe);

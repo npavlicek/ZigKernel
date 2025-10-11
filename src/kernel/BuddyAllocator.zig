@@ -14,7 +14,7 @@ pub const Error = error{
     RequestTooLarge,
     OutOfMemory,
     DoubleFree,
-    FailedToFree,
+    InvalidRequest,
 };
 
 inline fn checkPageAlignment(address: usize) void {
@@ -127,6 +127,8 @@ fn findFreeBlockOrSplit(this: *Allocator, requested_order: u8) Error!void {
 }
 
 pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero align(4096) u8 {
+    if (num_pages == 0) return Error.InvalidRequest;
+
     // First determine the max order we need
     const requested_order = std.math.log2_int_ceil(@TypeOf(num_pages), num_pages);
     if (requested_order > max_order)
@@ -213,7 +215,7 @@ fn mergeBuddy(this: *Allocator, address: usize) void {
         this.pages[page_idx].order = undefined;
         this.pages[buddy_block_idx].order += 1;
 
-        this.prependBlock(page_idx);
+        this.prependBlock(buddy_block_idx);
         this.mergeBuddy(buddy_address);
     }
 }
@@ -223,7 +225,7 @@ pub fn freePages(this: *Allocator, pages: *allowzero align(4096) anyopaque) Erro
 
     // TODO: Maybe if they supply us with a .Compound type we may rewind, and use the beginning of the block type?
     if (this.pages[page_idx].type != .Allocated)
-        return Error.FailedToFree;
+        return Error.InvalidRequest;
 
     if (this.pages[page_idx].type == .Free)
         return Error.DoubleFree;
