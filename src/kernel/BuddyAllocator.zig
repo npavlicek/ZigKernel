@@ -255,5 +255,7 @@ pub fn create(pages: []PageFrameMetadata) Allocator {
         }
     }
 
+    addBlocks(&res, current_block_address, current_block_length);
+
     return res;
 }

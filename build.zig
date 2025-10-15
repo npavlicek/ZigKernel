@@ -70,8 +70,10 @@ pub fn build(b: *std.Build) void {
     const kernel_tests = b.addTest(kernel_tests_options);
     kernel_tests.root_module.addImport("Kernel", kernel_module);
 
+    const run_kernel_tests = b.addRunArtifact(kernel_tests);
+
     const kernel_tests_step = b.step("tests", "run tests");
-    kernel_tests_step.dependOn(&kernel_tests.step);
+    kernel_tests_step.dependOn(&run_kernel_tests.step);
 
     b.installArtifact(kernel);
     b.installArtifact(exe);
