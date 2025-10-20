@@ -1,14 +1,14 @@
 pub inline fn outb(port: u16, byte: u8) void {
-    return asm volatile ("OUTB %[byte], %[port]"
+    return asm volatile ("outb %[byte], %[port]"
         :
-        : [port] "{DX}" (port),
-          [byte] "{AL}" (byte),
+        : [port] "{dx}" (port),
+          [byte] "{al}" (byte),
     );
 }
 
 pub inline fn inb(port: u16) u8 {
-    return asm volatile ("INB %[port], %[byte]"
-        : [byte] "={AL}" (-> u8),
-        : [port] "{DX}" (port),
+    return asm volatile ("inb %[port], %[byte]"
+        : [byte] "={al}" (-> u8),
+        : [port] "{dx}" (port),
     );
 }

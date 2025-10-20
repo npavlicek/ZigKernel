@@ -19,17 +19,13 @@ fn getBlockCountPerOrder(allocator: BuddyAllocator) [BuddyAllocator.max_order + 
 }
 
 // We must test a few things:
-// 1. max order block with 1 iteration all allocations of uniform size
-// 2. max order block with 10 iterations all allocations of uniform size
-// 3. max order block with 1 iteration all allocations of random size
-// 4. max order block with 10 iterations all allocations of random size
-// 5. random memory map with 1 iteration all allocations of uniform size
-// 6. random memory map with 10 iterations all allocations of uniform size
-// 7. random memory map with 1 iteration all allocations of random size
-// 8. random memory map with 10 iterations all allocations of random size
+// 1. max order block with 10 iterations all allocations of uniform size
+// 2. max order block with 10 iterations all allocations of random size
+// 3. fragmented map with 10 iterations all allocations of uniform size
+// 4. fragmented map with 10 iterations all allocations of random size
 test "Memory exhaustion 1" {
     const max_block_size: usize = @as(usize, 0x1) << BuddyAllocator.max_order;
-    const pages = try testing.allocator_instance.allocator().alloc(KernelTypes.PageFrameMetadata, max_block_size);
+    var pages = try testing.allocator_instance.allocator().alloc(KernelTypes.PageFrameMetadata, max_block_size);
 
     @memset(pages, KernelTypes.PageFrameMetadata{
         .type = .Free,
@@ -37,23 +33,89 @@ test "Memory exhaustion 1" {
 
     var allocator = BuddyAllocator.create(pages);
     const allocated_addresses: []*allowzero u8 = try testing.allocator_instance.allocator().alloc(*allowzero u8, max_block_size);
+    defer testing.allocator_instance.allocator().free(allocated_addresses);
 
-    const initial_blocks = getBlockCountPerOrder(allocator);
-
-    for (0..max_block_size) |idx| {
-        const page = try allocator.allocatePages(1);
-        allocated_addresses[idx] = @alignCast(@ptrCast(page.ptr));
+    // 1
+    for (0..10) |_| {
+        const initial_blocks = getBlockCountPerOrder(allocator);
+        for (0..max_block_size) |idx| {
+            const page = try allocator.allocatePages(1);
+            allocated_addresses[idx] = @ptrCast(@alignCast(page.ptr));
+        }
+        for (allocated_addresses) |cur_addr| {
+            try allocator.freePages(@ptrCast(@alignCast(cur_addr)));
+        }
+        const final_blocks = getBlockCountPerOrder(allocator);
+        for (0..BuddyAllocator.max_order + 1) |idx| {
+            try std.testing.expectEqual(initial_blocks[idx], final_blocks[idx]);
+        }
     }
-    for (allocated_addresses) |cur_addr| {
-        try allocator.freePages(@alignCast(@ptrCast(cur_addr)));
+
+    // 2
+    for (0..10) |_| {
+        const page_count = (std.crypto.random.int(usize) % max_block_size) + 1;
+        const initial_blocks = getBlockCountPerOrder(allocator);
+        var count: usize = 0;
+        while (allocator.allocatePages(page_count)) |address| {
+            allocated_addresses[count] = @ptrCast(@alignCast(address));
+            count += 1;
+        } else |_| {}
+        for (0..count) |index| {
+            try allocator.freePages(@ptrCast(@alignCast(allocated_addresses[index])));
+        }
+        const final_blocks = getBlockCountPerOrder(allocator);
+        for (0..BuddyAllocator.max_order + 1) |idx| {
+            try std.testing.expectEqual(initial_blocks[idx], final_blocks[idx]);
+        }
     }
 
-    const final_blocks = getBlockCountPerOrder(allocator);
+    // Now we fragment the memory map for the next two tests
+    testing.allocator_instance.allocator().free(pages);
+    pages = try testing.allocator_instance.allocator().alloc(KernelTypes.PageFrameMetadata, max_block_size);
+
+    for (pages) |*page| {
+        page.type = .Free;
+    }
+
+    for (1025..3334) |index| {
+        pages[index].type = .Reserved;
+    }
+
+    allocator = BuddyAllocator.create(pages);
+
+    // 3
+    for (0..10) |_| {
+        const initial_blocks = getBlockCountPerOrder(allocator);
+        for (0..max_block_size) |idx| {
+            const page = try allocator.allocatePages(1);
+            allocated_addresses[idx] = @ptrCast(@alignCast(page.ptr));
+        }
+        for (allocated_addresses) |cur_addr| {
+            try allocator.freePages(@ptrCast(@alignCast(cur_addr)));
+        }
+        const final_blocks = getBlockCountPerOrder(allocator);
+        for (0..BuddyAllocator.max_order + 1) |idx| {
+            try std.testing.expectEqual(initial_blocks[idx], final_blocks[idx]);
+        }
+    }
+
+    // 4
+    for (0..10) |_| {
+        const page_count = (std.crypto.random.int(usize) % max_block_size) + 1;
+        const initial_blocks = getBlockCountPerOrder(allocator);
+        var count: usize = 0;
+        while (allocator.allocatePages(page_count)) |address| {
+            allocated_addresses[count] = @ptrCast(@alignCast(address));
+            count += 1;
+        } else |_| {}
+        for (0..count) |index| {
+            try allocator.freePages(@ptrCast(@alignCast(allocated_addresses[index])));
+        }
+        const final_blocks = getBlockCountPerOrder(allocator);
+        for (0..BuddyAllocator.max_order + 1) |idx| {
+            try std.testing.expectEqual(initial_blocks[idx], final_blocks[idx]);
+        }
+    }
 
     testing.allocator_instance.allocator().free(pages);
-    testing.allocator_instance.allocator().free(allocated_addresses);
-
-    for (0..BuddyAllocator.max_order + 1) |idx| {
-        try std.testing.expectEqual(initial_blocks[idx], final_blocks[idx]);
-    }
 }

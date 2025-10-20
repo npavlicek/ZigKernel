@@ -20,6 +20,8 @@ var memory_map_key: usize = undefined;
 var memory_map_descriptor_size: usize = undefined;
 var descriptor_version: u32 = undefined;
 
+var memory_map_info: uefi.tables.MemoryMapInfo = undefined;
+
 var page_table: ?[*]align(4096) Paging.Pdpte = null;
 
 var pages: [*]align(8) KernelTypes.PageFrameMetadata = undefined;
@@ -47,21 +49,41 @@ pub fn defaultPanic(
 pub const panic = std.debug.FullPanic(defaultPanic);
 
 fn getMemoryMap() void {
-    if (memory_map_size == 0) {
-        memory_map_size = 1 * @sizeOf(uefi.tables.MemoryDescriptor);
-        uefi.system_table.boot_services.?.allocatePool(.loader_data, memory_map_size, &memory_map).err() catch unreachable;
+    // TODO: make sure there is memory allocated in our buffer
+    memory_map_info = uefi.system_table.boot_services.?.getMemoryMapInfo() catch unreachable;
+
+    var memory_map_backing = uefi.system_table.boot_services.?.allocatePool(.loader_data, memory_map_info.len * memory_map_info.descriptor_size) catch unreachable;
+
+    while (memory_map_info.len * memory_map_info.descriptor_size != memory_map_backing.len) {
+        uefi.system_table.boot_services.?.freePool(memory_map_backing);
+        memory_map_backing = uefi.system_table.boot_services.?.allocatePool(.loader_data, memory_map_info.len * memory_map_info.descriptor_size) catch unreachable;
+        memory_map_info = uefi.system_table.boot_services.?.getMemoryMapInfo() catch unreachable;
     }
-    while (uefi.system_table.boot_services.?.getMemoryMap(
-        &memory_map_size,
-        memory_map,
-        &memory_map_key,
-        &memory_map_descriptor_size,
-        &descriptor_version,
-    ).err() == uefi.Status.Error.BufferTooSmall) {
-        uefi.system_table.boot_services.?.freePool(@alignCast(@ptrCast(memory_map))).err() catch unreachable;
-        uefi.system_table.boot_services.?.allocatePool(.loader_data, memory_map_size, @ptrCast(&memory_map)).err() catch unreachable;
-    }
+
+    var mem_map = uefi.system_table.boot_services.?.getMemoryMap(memory_map_backing) catch |err| {
+        switch (err) {
+            .BufferTooSmall => {},
+        }
+    };
 }
+
+//fn getMemoryMap() void {
+//    if (memory_map_size == 0) {
+//        memory_map_size = 1 * @sizeOf(uefi.tables.MemoryDescriptor);
+//        const res = uefi.system_table.boot_services.?.allocatePool(.loader_data, memory_map_size) catch unreachable;
+//        memory_map = @ptrCast(res.ptr);
+//    }
+//    while (uefi.system_table.boot_services.?.getMemoryMap(
+//        &memory_map_size,
+//        memory_map,
+//        &memory_map_key,
+//        &memory_map_descriptor_size,
+//        &descriptor_version,
+//    ).err() == uefi.Status.Error.BufferTooSmall) {
+//        uefi.system_table.boot_services.?.freePool(@ptrCast(@alignCast(memory_map))).err() catch unreachable;
+//        uefi.system_table.boot_services.?.allocatePool(.loader_data, memory_map_size, @ptrCast(&memory_map)).err() catch unreachable;
+//    }
+//}
 
 fn loadFile(comptime filePath: []const u8) []align(std.heap.pageSize()) u8 {
     var file_system: ?*uefi.protocol.SimpleFileSystem = undefined;
@@ -106,11 +128,11 @@ fn getOrCreatePage(t: type, p: *anyopaque) ![*]align(4096) t {
     var res: [*]align(4096) t = undefined;
     switch (t) {
         Paging.Pml4, Paging.Pdpte, Paging.Pde, Paging.PageEntry => {
-            const page_entry: *Paging.PageEntry = @alignCast(@ptrCast(p));
+            const page_entry: *Paging.PageEntry = @ptrCast(@alignCast(p));
             if (page_entry.*.present) {
                 res = @ptrFromInt(@as(u52, page_entry.physical_address) << 12);
             } else {
-                uefi.system_table.boot_services.?.allocatePages(.allocate_any_pages, EfiPagingMemory, 1, @alignCast(@ptrCast(&res))).err() catch unreachable;
+                uefi.system_table.boot_services.?.allocatePages(.allocate_any_pages, EfiPagingMemory, 1, @ptrCast(@alignCast(&res))).err() catch unreachable;
                 @memset(res[0..512], @bitCast(@as(u64, 0)));
                 page_entry.* = @bitCast(@as(u64, 0));
                 page_entry.*.present = true;
@@ -128,7 +150,7 @@ fn getOrCreatePage(t: type, p: *anyopaque) ![*]align(4096) t {
 
 fn mapMemory(virtual_address: usize, physical_address: usize) !void {
     if (page_table == null) {
-        uefi.system_table.boot_services.?.allocatePages(.allocate_any_pages, EfiPagingMemory, 1, @alignCast(@ptrCast(&page_table))).err() catch unreachable;
+        uefi.system_table.boot_services.?.allocatePages(.allocate_any_pages, EfiPagingMemory, 1, @ptrCast(@alignCast(&page_table))).err() catch unreachable;
         @memset(page_table.?[0..512], @bitCast(@as(u64, 0)));
     }
 
@@ -195,14 +217,14 @@ pub fn main() noreturn {
     const bs = uefi.system_table.boot_services.?;
     const out = uefi.system_table.con_out.?;
 
-    _ = out.clearScreen();
+    out.clearScreen() catch unreachable;
 
     Serial.init() catch {
-        _ = out.outputString(W("Failed to initialize Serial IO"));
+        _ = out.outputString(W("Failed to initialize Serial IO")) catch unreachable;
     };
 
     var loaded_image: ?*uefi.protocol.LoadedImage = undefined;
-    uefi.system_table.boot_services.?.handleProtocol(uefi.handle, &uefi.protocol.LoadedImage.guid, @ptrCast(&loaded_image)).err() catch unreachable;
+    loaded_image = bs.openProtocol(uefi.protocol.LoadedImage, uefi.handle, .{ .by_handle_protocol = .{ .agent = uefi.handle } }) catch unreachable;
     if (loaded_image) |image| {
         print("Image Base: {*}\n", .{image.image_base});
         image_base = @intFromPtr(image.image_base);
@@ -221,7 +243,7 @@ pub fn main() noreturn {
     }
 
     // Map our kernel
-    const elf_hdr: *ELF.Header64 = @alignCast(@ptrCast(kernel_bin.ptr));
+    const elf_hdr: *ELF.Header64 = @ptrCast(@alignCast(kernel_bin.ptr));
     for (0..elf_hdr.program_header_entry_count) |i| {
         var cur_entry: ELF.ProgramHeader64 = undefined;
         @memcpy(@as([*]u8, @ptrCast(&cur_entry))[0..@sizeOf(ELF.ProgramHeader64)], kernel_bin.ptr + elf_hdr.program_header_off + (i * elf_hdr.program_header_size));

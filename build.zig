@@ -30,6 +30,8 @@ pub fn build(b: *std.Build) void {
             .strip = false,
             .dwarf_format = .@"64",
         }),
+        .use_llvm = true,
+        .use_lld = true,
     });
 
     const kernel_target = b.resolveTargetQuery(.{
@@ -51,6 +53,8 @@ pub fn build(b: *std.Build) void {
             .dwarf_format = .@"64",
             .strip = false,
         }),
+        .use_llvm = true,
+        .use_lld = true,
     });
     kernel.setLinkerScript(b.path("./config/kernel.ld"));
 

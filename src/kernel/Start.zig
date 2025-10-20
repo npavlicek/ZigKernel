@@ -25,25 +25,24 @@ pub const panic = std.debug.FullPanic(defaultPanic);
 
 export fn _start() linksection(".kernel_start") callconv(.naked) noreturn {
     asm volatile (
-        \\ POPQ %[out]
+        \\ popq %[out]
         : [out] "=r" (kernel_args),
     );
 
     asm volatile (
-        \\ MOV %[stack_top], %%rsp
-        \\ MOV %[stack_top], %%rbp
+        \\ mov %[stack_top], %%rsp
+        \\ mov %[stack_top], %%rbp
         :
         : [stack_top] "r" (&__stack_end),
-        : "rsp", "rbp"
     );
 
     asm volatile (
-        \\ CALLQ *%[kernelTrampoline]
+        \\ callq *%[kernelTrampoline]
         :
-        : [kernelTrampoline] "rax" (&kernelTrampoline),
+        : [kernelTrampoline] "{rax}" (&kernelTrampoline),
     );
 }
 
-export fn kernelTrampoline() callconv(.C) noreturn {
+export fn kernelTrampoline() callconv(.c) noreturn {
     main(kernel_args.*);
 }
