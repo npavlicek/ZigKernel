@@ -10,13 +10,15 @@ fn getBlockCountPerOrder(allocator: BuddyAllocator) [BuddyAllocator.max_order + 
         var count: usize = 0;
         var cur = allocator.orders[idx];
         while (cur) |cur_unwrapped| {
-            cur = cur_unwrapped.next_block;
+            cur = cur_unwrapped.*.next_block;
             count += 1;
         }
         block_count[idx] = count;
     }
     return block_count;
 }
+
+// FIXME: Make sure to test for the scenario where the initial buddy allocator orders array is built incorrectly because of misaligned blocks upon creation because of a fragmented memory map.
 
 // We must test a few things:
 // 1. max order block with 10 iterations all allocations of uniform size
@@ -73,10 +75,9 @@ test "Memory exhaustion 1" {
     testing.allocator_instance.allocator().free(pages);
     pages = try testing.allocator_instance.allocator().alloc(KernelTypes.PageFrameMetadata, max_block_size);
 
-    for (pages) |*page| {
-        page.type = .Free;
-    }
+    @memset(pages, KernelTypes.PageFrameMetadata{ .type = .Free });
 
+    // FIXME: think of a better way of testing for the misaligned memory map mentioned above
     for (1025..3334) |index| {
         pages[index].type = .Reserved;
     }
@@ -86,12 +87,13 @@ test "Memory exhaustion 1" {
     // 3
     for (0..10) |_| {
         const initial_blocks = getBlockCountPerOrder(allocator);
-        for (0..max_block_size) |idx| {
-            const page = try allocator.allocatePages(1);
-            allocated_addresses[idx] = @ptrCast(@alignCast(page.ptr));
-        }
-        for (allocated_addresses) |cur_addr| {
-            try allocator.freePages(@ptrCast(@alignCast(cur_addr)));
+        var alloc_addr_idx: usize = 0;
+        while (allocator.allocatePages(1)) |page| {
+            allocated_addresses[alloc_addr_idx] = @ptrCast(@alignCast(page.ptr));
+            alloc_addr_idx += 1;
+        } else |_| {}
+        for (0..alloc_addr_idx) |idx| {
+            try allocator.freePages(@ptrCast(@alignCast(allocated_addresses[idx])));
         }
         const final_blocks = getBlockCountPerOrder(allocator);
         for (0..BuddyAllocator.max_order + 1) |idx| {

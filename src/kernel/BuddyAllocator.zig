@@ -39,6 +39,8 @@ fn addBlock(this: *Allocator, order: u8, address: usize) void {
 fn addBlocks(this: *Allocator, start_address: usize, pages: usize) void {
     checkPageAlignment(start_address);
 
+    std.debug.assert(pages > 0);
+
     var current_pages = pages;
     var current_order = std.math.log2_int(usize, pages);
     if (current_order > max_order)
@@ -255,7 +257,9 @@ pub fn create(pages: []PageFrameMetadata) Allocator {
         }
     }
 
-    addBlocks(&res, current_block_address, current_block_length);
+    if (current_block_length > 0) {
+        addBlocks(&res, current_block_address, current_block_length);
+    }
 
     return res;
 }
