@@ -18,8 +18,6 @@ fn getBlockCountPerOrder(allocator: BuddyAllocator) [BuddyAllocator.max_order + 
     return block_count;
 }
 
-// FIXME: Make sure to test for the scenario where the initial buddy allocator orders array is built incorrectly because of misaligned blocks upon creation because of a fragmented memory map.
-
 // We must test a few things:
 // 1. max order block with 10 iterations all allocations of uniform size
 // 2. max order block with 10 iterations all allocations of random size
@@ -34,18 +32,19 @@ test "Memory exhaustion 1" {
     });
 
     var allocator = BuddyAllocator.create(pages);
-    const allocated_addresses: []*allowzero u8 = try testing.allocator_instance.allocator().alloc(*allowzero u8, max_block_size);
-    defer testing.allocator_instance.allocator().free(allocated_addresses);
+    const allocated_addresses: []*allowzero u8 = try testing.allocator_instance.allocator().alloc(*allowzero u8, max_block_size * 3);
 
     // 1
     for (0..10) |_| {
         const initial_blocks = getBlockCountPerOrder(allocator);
+        var count: usize = 0;
         for (0..max_block_size) |idx| {
             const page = try allocator.allocatePages(1);
             allocated_addresses[idx] = @ptrCast(@alignCast(page.ptr));
+            count += 1;
         }
-        for (allocated_addresses) |cur_addr| {
-            try allocator.freePages(@ptrCast(@alignCast(cur_addr)));
+        for (0..count) |idx| {
+            try allocator.freePages(@ptrCast(@alignCast(allocated_addresses[idx])));
         }
         const final_blocks = getBlockCountPerOrder(allocator);
         for (0..BuddyAllocator.max_order + 1) |idx| {
@@ -73,12 +72,16 @@ test "Memory exhaustion 1" {
 
     // Now we fragment the memory map for the next two tests
     testing.allocator_instance.allocator().free(pages);
-    pages = try testing.allocator_instance.allocator().alloc(KernelTypes.PageFrameMetadata, max_block_size);
+    pages = try testing.allocator_instance.allocator().alloc(KernelTypes.PageFrameMetadata, max_block_size * 3);
+    defer testing.allocator_instance.allocator().free(allocated_addresses);
 
     @memset(pages, KernelTypes.PageFrameMetadata{ .type = .Free });
 
-    // FIXME: think of a better way of testing for the misaligned memory map mentioned above
+    // Just randomly fragmenting the memory map
     for (1025..3334) |index| {
+        pages[index].type = .Reserved;
+    }
+    for (4000..8353) |index| {
         pages[index].type = .Reserved;
     }
 
@@ -87,6 +90,12 @@ test "Memory exhaustion 1" {
     // 3
     for (0..10) |_| {
         const initial_blocks = getBlockCountPerOrder(allocator);
+        var total_mem: usize = 0;
+        for (initial_blocks, 0..) |block, idx| {
+            std.log.info("{}: {}", .{ idx, block });
+            total_mem += (@as(usize, 2) << @truncate(idx));
+        }
+        std.log.info("total memory: 0x{X}\n", .{total_mem});
         var alloc_addr_idx: usize = 0;
         while (allocator.allocatePages(1)) |page| {
             allocated_addresses[alloc_addr_idx] = @ptrCast(@alignCast(page.ptr));
@@ -95,7 +104,13 @@ test "Memory exhaustion 1" {
         for (0..alloc_addr_idx) |idx| {
             try allocator.freePages(@ptrCast(@alignCast(allocated_addresses[idx])));
         }
+        total_mem = 0;
         const final_blocks = getBlockCountPerOrder(allocator);
+        for (final_blocks, 0..) |block, idx| {
+            std.log.info("{}: {}", .{ idx, block });
+            total_mem += (@as(usize, 2) << @truncate(idx));
+        }
+        std.log.info("total memory: 0x{X}\n", .{total_mem});
         for (0..BuddyAllocator.max_order + 1) |idx| {
             try std.testing.expectEqual(initial_blocks[idx], final_blocks[idx]);
         }

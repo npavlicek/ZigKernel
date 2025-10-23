@@ -3,9 +3,31 @@ const builtin = @import("builtin");
 const PageFrameMetadata = @import("KernelTypes.zig").PageFrameMetadata;
 const print = @import("Serial.zig").formatStackPrint;
 
+// PERF: Go through each function and optimize make sure each variable is only calculated once and loops arent too crazy
+// TODO: Clean up our functions and make sure they are more readable
+// TODO: Create unit tests for all public facing functions
+// TODO: Make public facing functions cover all edge cases and return errors
+// FIXME: Fix the create() function in order to make it calculate our blocks correctly, currently it will generate blocks on non buddy boundaries
+// A method for this would just go from max order to min order and iterate by current block size (cur_addr += cur_block_size) and
+// check it fits within our address space and that the whole contiguous space is free if it is create a block out of it. As a consequence we can simplify
+// our addBlocks() function as we make it only take
+
 const Allocator = @This();
 
 pub const max_order: usize = 12;
+pub const order_sizes_pages: [max_order + 1]usize = block: {
+    var res: [max_order + 1]usize = undefined;
+    for (&res, 0..) |*cur, idx|
+        cur.* = @as(usize, 0x1) << @truncate(idx);
+    break :block res;
+};
+pub const order_sizes_bytes: [max_order + 1]usize = block: {
+    var res: [max_order + 1]usize = undefined;
+    for (order_sizes_pages, 0..) |val, idx| {
+        res[idx] = val * 4096;
+    }
+    break :block res;
+};
 
 orders: [max_order + 1]?*PageFrameMetadata = undefined,
 pages: []PageFrameMetadata = undefined,
@@ -17,16 +39,9 @@ pub const Error = error{
     InvalidRequest,
 };
 
-inline fn checkPageAlignment(address: usize) void {
-    if (comptime builtin.mode == .Debug) {
-        if (address % 4096 != 0) {
-            std.debug.panic("Address: {} is not page aligned!", .{address});
-        }
-    }
-}
-
 fn addBlock(this: *Allocator, order: u8, address: usize) void {
-    checkPageAlignment(address);
+    std.debug.assert(order < max_order + 1);
+    std.debug.assert(address % 4096 == 0);
 
     if (this.orders[order]) |current_block_unwrapped| {
         var current_block = current_block_unwrapped;
@@ -37,8 +52,7 @@ fn addBlock(this: *Allocator, order: u8, address: usize) void {
 }
 
 fn addBlocks(this: *Allocator, start_address: usize, pages: usize) void {
-    checkPageAlignment(start_address);
-
+    std.debug.assert(start_address % 4096 == 0);
     std.debug.assert(pages > 0);
 
     var current_pages = pages;
@@ -47,16 +61,15 @@ fn addBlocks(this: *Allocator, start_address: usize, pages: usize) void {
         current_order = max_order;
     var current_address = start_address;
     while (current_pages > 0) {
-        const current_order_pages = @as(usize, 1) << current_order;
-        var blocks_to_add = current_pages / current_order_pages;
-        current_pages %= current_order_pages;
+        var blocks_to_add = current_pages / order_sizes_pages[current_order];
+        current_pages %= order_sizes_pages[current_order];
         while (blocks_to_add > 0) {
             this.addBlock(current_order, current_address);
             this.pages[current_address / 4096].type = .Free;
             this.pages[current_address / 4096].order = current_order;
-            for (1..current_order_pages) |current_page_index|
+            for (1..order_sizes_pages[current_order]) |current_page_index|
                 this.pages[current_address / 4096 + current_page_index].type = .Compound;
-            current_address += current_order_pages * 4096;
+            current_address += order_sizes_bytes[current_order];
             blocks_to_add -= 1;
         }
         if (current_order > 0)
@@ -68,36 +81,15 @@ fn pageFrameAddressToIdx(this: *Allocator, page_frame_metadata_ptr: *PageFrameMe
     return (page_frame_metadata_ptr - this.pages.ptr);
 }
 
-fn printOrders(this: *Allocator) void {
-    for (0..(max_order + 1)) |idx| {
-        if (this.orders[idx]) |order| {
-            var current_order = order;
-            print("{}: [{}],{*} -> ", .{ idx, this.pageFrameAddressToIdx(current_order), current_order });
-            while (current_order.next_block) |next| {
-                current_order = next;
-                print("[{}]{*} -> ", .{ this.pageFrameAddressToIdx(current_order), current_order });
-            }
-            print("\n", .{});
-        }
-    }
-}
-
 fn splitBlock(this: *Allocator, order: u8) void {
-    // These two cases will be panics because that would indicate invalid kernel logic which is irrecoverable
-    if (order > max_order or order < 1)
-        std.debug.panicExtra(@returnAddress(), "({s}:{},{}) cannot split order {}, out of range", .{ @src().file, @src().line, @src().column, order });
+    std.debug.assert(order < max_order + 1);
+    std.debug.assert(order > 0);
+    std.debug.assert(this.orders[order] != null);
 
-    const first_block = this.orders[order] orelse {
-        std.debug.panicExtra(@returnAddress(), "({s}:{},{}) requested order {} is null", .{ @src().file, @src().line, @src().column, order });
-    };
-
-    const order_num_pages = @as(usize, 0x1) << @intCast(order);
+    const first_block = this.orders[order].?;
 
     const first_block_index = (first_block - this.pages.ptr);
-    const second_block_index = order_num_pages / 2 + first_block_index;
-
-    if (second_block_index > this.pages.len)
-        std.debug.panicExtra(@returnAddress(), "({s}:{},{}) second block index {} is out of range", .{ @src().file, @src().line, @src().column, order });
+    const second_block_index = order_sizes_pages[order] / 2 + first_block_index;
 
     const second_block = &this.pages[second_block_index];
 
@@ -118,6 +110,8 @@ fn splitBlock(this: *Allocator, order: u8) void {
 }
 
 fn findFreeBlockOrSplit(this: *Allocator, requested_order: u8) Error!void {
+    std.debug.assert(requested_order < max_order + 1);
+
     const found_free_order: u8 = blk: for (requested_order..(max_order + 1)) |current_order| {
         if (this.orders[current_order] != null) break :blk @intCast(current_order);
     } else return Error.OutOfMemory;
@@ -128,27 +122,13 @@ fn findFreeBlockOrSplit(this: *Allocator, requested_order: u8) Error!void {
     }
 }
 
-pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero align(4096) u8 {
-    if (num_pages == 0) return Error.InvalidRequest;
+fn removeBlock(this: *Allocator, block: *PageFrameMetadata) void {
+    std.debug.assert(@intFromPtr(block) >= @intFromPtr(this.pages.ptr));
+    std.debug.assert(@intFromPtr(block) < @intFromPtr(this.pages.ptr + this.pages.len));
 
-    // First determine the max order we need
-    const requested_order = std.math.log2_int_ceil(@TypeOf(num_pages), num_pages);
-    if (requested_order > max_order)
-        return Error.RequestTooLarge;
+    std.debug.assert(block.order < max_order + 1);
+    std.debug.assert(block.next_block != block);
 
-    // Verify we have a free block or split a higher order to get desired order block
-    try findFreeBlockOrSplit(this, requested_order);
-
-    const address: [*]allowzero align(4096) u8 = @ptrFromInt(this.pageFrameAddressToIdx(this.orders[requested_order].?) * 4096);
-    this.orders[requested_order].?.type = .Allocated;
-    this.orders[requested_order] = this.orders[requested_order].?.next_block;
-
-    const size: usize = (@as(usize, 0x1) << @intCast(requested_order)) * 4096;
-
-    return address[0..size];
-}
-
-fn removeBlock(this: *Allocator, block: *allowzero PageFrameMetadata) void {
     var cur_block_opt = this.orders[block.order];
     var prev_block_opt: ?*PageFrameMetadata = null;
 
@@ -175,24 +155,26 @@ fn removeBlock(this: *Allocator, block: *allowzero PageFrameMetadata) void {
     @panic("Block does not exist at supplied order");
 }
 
-fn prependBlock(this: *Allocator, page_idx: usize) void {
+fn prependBlockToFreeList(this: *Allocator, page_idx: usize) void {
+    std.debug.assert(this.pages[page_idx].type == .Free);
+
     this.pages[page_idx].next_block = this.orders[this.pages[page_idx].order];
     this.orders[this.pages[page_idx].order] = &this.pages[page_idx];
 }
 
 fn mergeBuddy(this: *Allocator, address: usize) void {
-    checkPageAlignment(address);
+    std.debug.assert(address % 4096 == 0);
+
     const page_idx: usize = @divExact(address, 4096);
+    std.debug.assert(this.pages[page_idx].type == .Free);
 
     if (this.pages[page_idx].order >= max_order) return;
 
-    if (this.pages[page_idx].type != .Free)
-        std.debug.panic("Trying to merge a non-freed block: 0x{X}\n", .{address});
-
-    const block_size: usize = (@as(usize, @intCast(0x1)) << @intCast(this.pages[page_idx].order)) * 4096;
+    const block_size: usize = order_sizes_bytes[this.pages[page_idx].order];
     const buddy_address = address ^ block_size;
     const buddy_block_idx = @divExact(buddy_address, 4096);
 
+    // Since our function is recursive if the buddy is not free we just mark the end of recursion and return
     if (this.pages[buddy_block_idx].type != .Free)
         return;
 
@@ -210,16 +192,36 @@ fn mergeBuddy(this: *Allocator, address: usize) void {
         this.pages[buddy_block_idx].order = undefined;
         this.pages[page_idx].order += 1;
 
-        this.prependBlock(page_idx);
+        this.prependBlockToFreeList(page_idx);
         this.mergeBuddy(address);
     } else {
         this.pages[page_idx].type = .Compound;
         this.pages[page_idx].order = undefined;
         this.pages[buddy_block_idx].order += 1;
 
-        this.prependBlock(buddy_block_idx);
+        this.prependBlockToFreeList(buddy_block_idx);
         this.mergeBuddy(buddy_address);
     }
+}
+
+pub fn allocatePages(this: *Allocator, num_pages: usize) Error![]allowzero align(4096) u8 {
+    if (num_pages == 0) return Error.InvalidRequest;
+
+    // First determine the max order we need
+    const requested_order = std.math.log2_int_ceil(@TypeOf(num_pages), num_pages);
+    if (requested_order > max_order)
+        return Error.RequestTooLarge;
+
+    // Verify we have a free block or split a higher order to get desired order block
+    try findFreeBlockOrSplit(this, requested_order);
+
+    const address: [*]allowzero align(4096) u8 = @ptrFromInt(this.pageFrameAddressToIdx(this.orders[requested_order].?) * 4096);
+    this.orders[requested_order].?.type = .Allocated;
+    this.orders[requested_order] = this.orders[requested_order].?.next_block;
+
+    const size: usize = order_sizes_bytes[requested_order];
+
+    return address[0..size];
 }
 
 pub fn freePages(this: *Allocator, pages: *allowzero align(4096) anyopaque) Error!void {
@@ -233,7 +235,7 @@ pub fn freePages(this: *Allocator, pages: *allowzero align(4096) anyopaque) Erro
         return Error.DoubleFree;
 
     this.pages[page_idx].type = .Free;
-    this.prependBlock(page_idx);
+    this.prependBlockToFreeList(page_idx);
     this.mergeBuddy(@intFromPtr(pages));
 }
 
@@ -262,4 +264,21 @@ pub fn create(pages: []PageFrameMetadata) Allocator {
     }
 
     return res;
+}
+
+test create {
+    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    var allocator = debug_allocator.allocator();
+
+    std.testing.log_level = .info;
+
+    for (order_sizes_pages, 0..) |size, order| {
+        std.log.info("{}: {}", .{ order, size });
+    }
+
+    const mem = try allocator.alloc(u8, order_sizes_pages[max_order]);
+
+    allocator.free(mem);
+
+    _ = debug_allocator.deinit();
 }
